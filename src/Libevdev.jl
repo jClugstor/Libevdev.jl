@@ -8,7 +8,14 @@ using .LibevdevRaw
 # struct type) and `libevdev_jll.libevdev` (the .so path) exist in
 # different scopes — a bare `libevdev` symbol is the wrong one in
 # either direction.
-using libevdev_jll: libevdev as _libevdev_so
+# A `const` and not a `using ... as`: with this JLLWrappers generation the
+# binding `libevdev_jll.libevdev` is a plain global that `__init__` fills, so a
+# ccall through it looks the path up at run time. A `juliac --trim` executable
+# has no `getproperty(::Module, ::Symbol)` for that and dies at the first
+# encoder read. The constant captures the resolved path when this module
+# precompiles (the same pattern as `const libpio = PIOLib_jll.libpio`).
+import libevdev_jll
+const _libevdev_so = libevdev_jll.libevdev
 
 # Parse the kernel input headers at precompile time and define matching
 # `const` bindings (EV_*, KEY_*, BTN_*, ABS_*, FF_*, MT_TOOL_*, BUS_*,
