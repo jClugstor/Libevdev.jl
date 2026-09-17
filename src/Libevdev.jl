@@ -3,17 +3,9 @@ module Libevdev
 include("LibevdevRaw.jl")
 using .LibevdevRaw
 
-# Library handle for ccalls in the wrapper layer. Imported under an
-# unambiguous name because both `LibevdevRaw.libevdev` (the opaque
-# struct type) and `libevdev_jll.libevdev` (the .so path) exist in
-# different scopes — a bare `libevdev` symbol is the wrong one in
-# either direction.
-# A `const` and not a `using ... as`: with this JLLWrappers generation the
-# binding `libevdev_jll.libevdev` is a plain global that `__init__` fills, so a
-# ccall through it looks the path up at run time. A `juliac --trim` executable
-# has no `getproperty(::Module, ::Symbol)` for that and dies at the first
-# encoder read. The constant captures the resolved path when this module
-# precompiles (the same pattern as `const libpio = PIOLib_jll.libpio`).
+# Library handle for ccalls. Named to avoid a clash with the
+# `LibevdevRaw.libevdev` struct type. A `const` so the path is resolved
+# at precompile time, which `juliac --trim` requires.
 import libevdev_jll
 const _libevdev_so = libevdev_jll.libevdev
 
