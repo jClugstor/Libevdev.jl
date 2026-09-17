@@ -142,7 +142,7 @@ that cached value will be `0`. The first real event updates the slot.
 If you need a guaranteed-correct initial value, wait for an event
 before querying.
 """
-function AxisTracker(dev::EvdevDevice; own::Bool=false)
+function AxisTracker(dev::EvdevDevice; own::Bool=false, pump::Bool=true)
     ranges, abs_values = _discover_abs_axes(dev)
     rel_values = _discover_rel_axes(dev)
     t = AxisTracker(dev, own, ranges, abs_values, rel_values,
@@ -152,7 +152,13 @@ function AxisTracker(dev::EvdevDevice; own::Bool=false)
                     nothing,
                     Threads.Atomic{Bool}(false), false)
     finalizer(_finalize_tracker!, t)
-    t.task = Threads.@spawn _pump_axes(t)
+    # `pump=false`: no background task. The owner calls `drain!` itself, at
+    # the moment it wants fresh counts. This needs no scheduler cooperation
+    # and no file watching, and it works in a `juliac --trim` executable,
+    # where the spawned pump never delivered an event.
+    if pump
+        t.task = Threads.@spawn _pump_axes(t)
+    end
     return t
 end
 
@@ -168,7 +174,47 @@ Equivalent to `AxisTracker(EvdevDevice(path); own=true)`.
 - `SystemError` if `open(2)` fails.
 - `EvdevError` if `libevdev_new_from_fd` fails or axis discovery fails.
 """
-AxisTracker(path::AbstractString) = AxisTracker(EvdevDevice(path); own=true)
+AxisTracker(path::AbstractString; pump::Bool=true) = AxisTracker(EvdevDevice(path); own=true, pump=pump)
+
+"""
+    drain!(t::AxisTracker) -> Int
+
+Read every event the device has queued, right now, on the calling task, and
+update the axis slots. Returns the number of events handled. Use it with a
+tracker built with `pump=false`; with a running pump it is harmless but
+pointless. Handles the `SYN_DROPPED` resync the same way the pump does.
+"""
+function drain!(t::AxisTracker)
+    dev = t.device
+    isopen(dev) || return 0
+    ev_ref = Ref{InputEvent}()
+    n = 0
+    sync_mode = false
+    while true
+        flag = sync_mode ? UInt32(LibevdevRaw.LIBEVDEV_READ_FLAG_SYNC) :
+                           UInt32(LibevdevRaw.LIBEVDEV_READ_FLAG_NORMAL)
+        status = lock(dev.lock) do
+            ccall((:libevdev_next_event, _libevdev_so),
+                  Cint,
+                  (Ptr{LibevdevRaw.libevdev}, Cuint, Ptr{InputEvent}),
+                  dev, flag, ev_ref)
+        end
+        if status == Int(LibevdevRaw.LIBEVDEV_READ_STATUS_SUCCESS)
+            _record_event!(t, ev_ref[])
+            n += 1
+        elseif status == Int(LibevdevRaw.LIBEVDEV_READ_STATUS_SYNC)
+            _record_event!(t, ev_ref[])
+            n += 1
+            sync_mode = true
+        elseif status == -_EAGAIN
+            sync_mode || break
+            sync_mode = false
+        else
+            break
+        end
+    end
+    return n
+end
 
 function _finalize_tracker!(t::AxisTracker)
     try
